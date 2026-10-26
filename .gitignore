@@ -29,3 +29,5 @@ STATUS.md
 site/dist/
 site/preview.html
 site/_*
+# a Codely CLI session run in this folder: its auto-saves, tool logs and settings
+.codely-cli/

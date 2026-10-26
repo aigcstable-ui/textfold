@@ -3,6 +3,9 @@
   agent  claude-code  `claude -p --json-schema`               (structured output)
          codex        `codex exec --output-schema`            (structured output)
          pi           `pi -p --mode json`                     (JSON asked for in the prompt)
+         codebuddy    `codebuddy -p --json-schema`            (structured output)
+         qodercli     `qodercli -p`                           (JSON asked for in the prompt)
+         codely       `codely -p --output-format json`        (JSON asked for in the prompt)
   api    anthropic    the official SDK (`pip install anthropic`), structured output
          openai       any OpenAI-compatible endpoint (llm_openai.py), JSON mode
 
@@ -128,6 +131,10 @@ def _once(prompt, schema, spec, timeout, system):
             return agents.run_codex(spec["model"], prompt, schema, system, effort, timeout, tools)
         if spec["runtime"] == "codebuddy":
             return agents.run_codebuddy(spec["model"], prompt, schema, system, effort, timeout, tools)
+        if spec["runtime"] == "qodercli":
+            return agents.run_qodercli(spec["model"], prompt, schema, system, effort, timeout, tools)
+        if spec["runtime"] == "codely":
+            return agents.run_codely(spec["model"], prompt, schema, system, effort, timeout, tools)
         return agents.run_pi(spec["model"], prompt, schema, system, effort, timeout, tools)
     if spec["protocol"] == "anthropic":
         return _anthropic(prompt, schema, spec, timeout, system)

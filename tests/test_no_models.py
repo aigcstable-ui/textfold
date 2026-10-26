@@ -30,7 +30,8 @@ class NoModels(unittest.TestCase):
     def test_a_named_model_is_not_asked(self):
         s = {"model": None}   # (settings given: the real ones are not read)
         named = [models.resolve("sonnet", s), models.resolve("pi/anthropic/claude-sonnet-5-5", s),
-                 models.resolve("codebuddy/codebuddy/glm-5.1", s), API]   # (the command line's sonnet, an agent's, an API's)
+                 models.resolve("codebuddy/codebuddy/glm-5.1", s), models.resolve("qodercli/qodercli/Auto", s),
+                 models.resolve("codely/codely/GLM-5.3", s), API]   # (the command line's sonnet, agents', an API's)
         with mock.patch.dict(os.environ, {"TEXTFOLD_NO_MODELS": "1"}):
             for spec in named:
                 with self.subTest(model=spec["id"]):

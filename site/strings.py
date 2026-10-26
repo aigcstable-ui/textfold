@@ -59,8 +59,8 @@ S = {
     "agent_p": ('In Claude Code, every reply gets five levels, one key each, with no second model.',
         '在 Claude Code 里，每条回复都有五层，一个键一层，不用第二个模型。'),
 
-    "app_p": ('Nothing else to install. It finds Claude Code, Codex, Pi or WorkBuddy on your computer, or connects a free model in one click.',
-        '不用再装别的。它会找到你电脑上的 Claude Code、Codex、Pi 或 WorkBuddy，也能一键连上免费模型。'),
+    "app_p": ('Nothing else to install. It finds Claude Code, Codex, Pi, WorkBuddy, Qoder CLI or Codely CLI on your computer, or connects a free model in one click.',
+        '不用再装别的。它会找到你电脑上的 Claude Code、Codex、Pi、WorkBuddy、Qoder CLI 或 Codely CLI，也能一键连上免费模型。'),
 
     "which_mac": ('<b>Which Mac?</b> Apple menu › About This Mac: <em>Chip Apple M…</em> or <em>Processor Intel</em>.',
         '<b>哪种 Mac？</b>苹果菜单 › 关于本机：写着 <em>芯片 Apple M…</em> 或 <em>处理器 Intel</em>。'),

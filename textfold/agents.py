@@ -2,23 +2,37 @@
 
 The server scans for them at startup (and on demand): every mainstream agent CLI is looked for on PATH,
 on the login shell's PATH, in the usual install directories and under the node version managers, as
-ThoughtDAG's where.cjs does. Four can run a generation, the three ThoughtDAG drives and CodeBuddy:
+ThoughtDAG's where.cjs does. Six can run a generation, the three ThoughtDAG drives, CodeBuddy, Qoder CLI and Codely CLI:
 
   claude-code  claude -p, structured output by --json-schema        models: fable, opus, sonnet, haiku
   codex        codex exec, structured output by --output-schema      models: `codex app-server` model/list
   pi           pi -p --mode json, JSON asked for in the prompt       models: `pi --mode rpc` get_available_models
   codebuddy    codebuddy -p, structured output by --json-schema      models: the account's, as its --help lists them
+  qodercli     qodercli -p, JSON asked for in the prompt             models: the account's, as --list-models lists them
+  codely       codely -p --output-format json, JSON in the prompt    models: `codely --cmd "/model list"`
 
 CodeBuddy is Tencent's CLI, and WorkBuddy carries a copy of it (cli/bin/codebuddy in the app), which runs on the app's
 own Electron and the WorkBuddy sign-in, as WorkBuddy runs it: no node needed, the reader's WorkBuddy models.
 
+Qoder CLI is Qoder's own: claude -p's flags and result object, its models on the Qoder sign-in, its step of reasoning
+--reasoning-effort (off is "none"), and no structured output flag: the schema is asked for in the prompt, as Pi's.
+
+Codely CLI is Tuanjie's own, on the Codely sign-in: -p with --output-format json (the answer in its reply's `response`),
+its models as `codely --cmd "/model list"` lists them, and its step of reasoning --reasoning_effort (minimal, low,
+medium, high, xhigh, max). It has no flag to replace its system prompt or its tools, and in -p mode it accepts a tool
+call without asking: a generation passes the system prompt in the prompt and excludes every tool `--list-tools` names,
+so it answers as text rather than act; a question about a text keeps its own web tools (web_search, web_fetch) and
+nothing else.
+
 The others are reported when found, but not driven yet. A model id is ThoughtDAG's:
-`claude/claude-code/opus`, `codex/codex/<model>`, `pi/<provider>/<model>`; CodeBuddy's `codebuddy/codebuddy/<model>`.
+`claude/claude-code/opus`, `codex/codex/<model>`, `pi/<provider>/<model>`; CodeBuddy's `codebuddy/codebuddy/<model>`,
+Qoder CLI's `qodercli/qodercli/<model>`, Codely CLI's `codely/codely/<model>`.
 Agents run here as one-shot text generators: no tools, no session, a scratch working directory. A question about a
 text can be looked up on the web (tools=True: the switch beside a question; models.ask_spec): the agent's own web
-tools, its own system prompt with ours after it, and nothing that changes a file (Claude Code and CodeBuddy: WebSearch
-and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search, in the read-only
-sandbox it always runs in, where it may read but writes nothing). Still no session, and the scratch directory to start in.
+tools, its own system prompt with ours after it, and nothing that changes a file (Claude Code, CodeBuddy and Qoder
+CLI: WebSearch and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search,
+in the read-only sandbox it always runs in, where it may read but writes nothing). Still no session, and the scratch
+directory to start in.
 """
 import glob
 import json
@@ -185,6 +199,8 @@ REGISTRY = [
     ("codex", "Codex", "codex", ["~/.codex/bin"], True),
     ("pi", "Pi", "pi", ["~/.pi/bin"], True),
     ("codebuddy", "CodeBuddy", "codebuddy", [], True),   # (WorkBuddy's copy first: locate_codebuddy)
+    ("qodercli", "Qoder CLI", "qodercli", ["~/.qoder/bin"], True),
+    ("codely", "Codely CLI", "codely", [], True),
     ("gemini", "Gemini CLI", "gemini", [], False),
     ("qwen", "Qwen Code", "qwen", [], False),
     ("opencode", "opencode", "opencode", ["~/.opencode/bin"], False),
@@ -198,7 +214,8 @@ REGISTRY = [
     ("iflow", "iFlow CLI", "iflow", [], False),
     ("aider", "Aider", "aider", [], False),
 ]
-PREFIX = {"claude-code": "claude/", "codex": "codex/", "pi": "pi/", "codebuddy": "codebuddy/"}
+PREFIX = {"claude-code": "claude/", "codex": "codex/", "pi": "pi/", "codebuddy": "codebuddy/", "qodercli": "qodercli/",
+          "codely": "codely/"}
 COMMON = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "~/.bun/bin", "~/.npm-global/bin", "~/.local/bin"]
 if WIN:   # npm's global folder, Claude Code's own installer (~/.local/bin, above), Scoop, Node itself
     COMMON = [os.path.join(os.environ.get("APPDATA") or "~/AppData/Roaming", "npm"), "~/.local/bin", "~/.bun/bin", "~/scoop/shims",
@@ -424,6 +441,15 @@ def _help_levels(path, flag, pattern):
     return [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _plain(text):
+    """A CLI's text without the colors it wrote for a terminal (Codely's /model list is colored; the escapes are not
+    part of a line)."""
+    return _ANSI.sub("", text or "")
+
+
 def codebuddy_candidates():
     """WorkBuddy's copies of CodeBuddy, wherever WorkBuddy is, then one installed on its own (npm's)."""
     out = [c for r in workbuddy_roots() for c in find_cli(r)] + [locate("codebuddy")]
@@ -556,7 +582,37 @@ def _codebuddy_models(path):
              "model": n, "efforts": efforts, "defaultEffort": None} for n in names]
 
 
-CATALOG = {"claude-code": _claude_models, "codex": _codex_models, "pi": _pi_models, "codebuddy": _codebuddy_models}
+QODER_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]   # (its --reasoning-effort, less auto)
+
+
+def _qodercli_models(path):
+    """The models the account may use, as `qodercli --list-models` lists them (a MODEL heading, then a name a line)."""
+    r = _run([*argv(path), "--list-models"], 20, env_for(path))
+    if r.returncode:
+        raise RuntimeError(((r.stderr or r.stdout).strip() or f"exit {r.returncode}")[-300:])
+    lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+    names = lines[lines.index("MODEL") + 1:] if "MODEL" in lines else lines
+    return [{"id": f"qodercli/qodercli/{n}", "name": f"Qoder CLI · {n}", "runtime": "qodercli", "model": n,
+             "efforts": QODER_EFFORTS, "defaultEffort": None} for n in names]
+
+
+CODELY_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"]   # (its --reasoning_effort: no level off)
+
+
+def _codely_models(path):
+    """The models the account may use, as `codely --cmd "/model list"` lists them: a ● (the one in use) or an ○ a line,
+    then the model's name, `(current)` on the one in use."""
+    r = _run([*argv(path), "--cmd", "/model list"], 30, child_env())
+    text = _plain((r.stdout or "") + (r.stderr or ""))
+    names = [m.group(1).strip() for m in re.finditer(r"^[●○]\s+(.+?)(?:\s+\(current\))?\s*$", text, re.M)]
+    if not names:
+        raise RuntimeError((text.strip() or f"exit {r.returncode}")[-300:])
+    return [{"id": f"codely/codely/{n}", "name": f"Codely · {n}", "runtime": "codely", "model": n,
+             "efforts": CODELY_EFFORTS, "defaultEffort": None} for n in names]
+
+
+CATALOG = {"claude-code": _claude_models, "codex": _codex_models, "pi": _pi_models, "codebuddy": _codebuddy_models,
+           "qodercli": _qodercli_models, "codely": _codely_models}
 
 # ── the scan ──────────────────────────────────────────────────────────
 STATE = {"scanned_at": None, "scanning": False, "agents": []}
@@ -746,6 +802,109 @@ def run_codebuddy(model, prompt, schema, system, effort, timeout, tools=False):
     if out is None:
         out = parse_json(res.get("result") or "", schema)
     return out, res.get("total_cost_usd")
+
+
+def run_qodercli(model, prompt, schema, system, effort, timeout, tools=False):
+    """claude -p's way, with Qoder's differences: its step of reasoning is --reasoning-effort (off is "none"), and it
+    has no structured output flag: the schema is asked for in the prompt, as Pi's, and a reply whose JSON does not
+    parse is asked for once more."""
+    path = path_of("qodercli")
+    if not path:
+        raise RuntimeError("Qoder CLI was not found on this computer")
+    if tools:   # the web alone, allowed without asking; its own system prompt with ours after it
+        args = [*argv(path), "-p", "--model", model, "--tools", "WebSearch,WebFetch", "--allowed-tools", "WebSearch,WebFetch",
+                "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--append-system-prompt", system]
+    else:
+        args = [*argv(path), "-p", "--model", model, "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+                "--output-format", "json", "--system-prompt", system]
+    if effort:
+        args += ["--reasoning-effort", "none" if effort == "off" else effort]
+    body = f"{prompt}\n\nReply with one JSON object that matches this JSON Schema, and nothing else:\n{json.dumps(schema)}"
+    env = env_for(path)
+    for attempt in (1, 2):
+        with tempfile.TemporaryDirectory() as tmp:   # a scratch cwd: no project, nothing to read
+            r = subprocess.run(args + ([] if tools else ["--setting-sources", "project,local"]), input=body, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, cwd=tmp)
+            if r.returncode and not tools:   # (as Claude Code: where the user settings carry its sign-in, asked again with them)
+                r = subprocess.run(args, input=body, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                   timeout=timeout, env=env, cwd=tmp)
+        said = (r.stderr or r.stdout)[-800:]
+        try:
+            got = json.loads(r.stdout)
+        except ValueError:
+            raise RuntimeError(f"qodercli -p exited {r.returncode}: {said}")
+        rows = got if isinstance(got, list) else [got]
+        res = next((x for x in reversed(rows) if isinstance(x, dict) and x.get("type") == "result"), None)
+        if res is None:
+            raise RuntimeError(f"qodercli -p exited {r.returncode} with no result: {said}")
+        if res.get("is_error"):
+            raise RuntimeError(f"qodercli -p error: {str(res.get('result'))[:800]}")
+        try:
+            return parse_json(res.get("result") or "", schema), res.get("total_cost_usd")
+        except RuntimeError:
+            if attempt == 2:
+                raise
+
+
+_CODELY_TOOLS = {}   # the tools each Codely CLI found offers (codely_tools)
+
+
+def codely_tools(path):
+    """The name of every tool the Codely CLI at `path` would offer a generation, as its --list-tools lists them. It has
+    no flag that turns them off, and in -p mode it accepts a tool call without asking: a generation excludes each one."""
+    if path not in _CODELY_TOOLS:
+        r = _run([*argv(path), "--list-tools"], 30, child_env())
+        names = [m.group(1) for m in re.finditer(r"^-\s+([\w-]+):", _plain(r.stdout), re.M)]
+        if not names:   # (no list, no generation: a tool left in would act on its own)
+            raise RuntimeError(f"codely --list-tools listed no tool: {((r.stderr or r.stdout) or '').strip()[-300:]}")
+        _CODELY_TOOLS[path] = names
+    return _CODELY_TOOLS[path]
+
+
+def run_codely(model, prompt, schema, system, effort, timeout, tools=False):
+    """codely -p's way: --output-format json, the answer in its reply's `response`; no structured output flag, so the
+    schema is asked for in the prompt, and a reply whose JSON does not parse is asked for once more. Its system prompt
+    cannot be replaced: ours leads the prompt. Its tools cannot be turned off as a set: every one --list-tools names is
+    excluded, its own web tools alone when a question asks for them."""
+    path = path_of("codely")
+    if not path:
+        raise RuntimeError("Codely CLI was not found on this computer")
+    keep = {"web_search", "web_fetch"} if tools else set()
+    args = [*argv(path), "-p", "", "--model", model, "--output-format", "json", "--path-policy", "strict",
+            "--allowed-mcp-server-names", "__textfold_none__", "--no-agents"]
+    for name in codely_tools(path):
+        if name not in keep:
+            args += ["--exclude-tools", name]
+    if effort:
+        args += ["--reasoning_effort", "minimal" if effort == "off" else effort]   # (no level off: the least)
+    body = f"{system}\n\n{prompt}\n\nReply with one JSON object that matches this JSON Schema, and nothing else:\n{json.dumps(schema)}"
+    env = child_env()
+    for attempt in (1, 2):
+        with tempfile.TemporaryDirectory() as tmp:   # a scratch cwd: no project, nothing to read
+            r = subprocess.run(args, input=body, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, env=env, cwd=tmp)
+        said = (r.stderr or r.stdout)[-800:]
+        if r.returncode:
+            try:
+                got = json.loads(r.stdout)
+            except ValueError:
+                got = None
+            if isinstance(got, dict) and got.get("error"):
+                e = got["error"]
+                raise RuntimeError(f"codely -p error: {str((e or {}).get('message') or e)[:800]}")
+            raise RuntimeError(f"codely -p exited {r.returncode}: {said}")
+        try:
+            got = json.loads(r.stdout)
+        except ValueError:
+            raise RuntimeError(f"codely -p exited {r.returncode}: {said}")
+        text = got.get("response") if isinstance(got, dict) else None
+        if not isinstance(text, str):
+            raise RuntimeError(f"codely -p exited {r.returncode} with no response: {said}")
+        try:
+            return parse_json(text, schema), None
+        except RuntimeError:
+            if attempt == 2:
+                raise
 
 
 def _pi_once(args, body, schema, timeout):

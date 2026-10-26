@@ -20,6 +20,7 @@ Serif text is the author's; sans text is a summary. At every level the words tha
 ```bash
 python3 -m pip install -r requirements.txt   # beautifulsoup4, lxml, Pillow
 python3 -m textfold serve                    # http://localhost:3017  (ThoughtDAG keeps 3001)
+python3 -m textfold serve --host 0.0.0.0     # also on this computer's LAN address, for other devices (no password)
 ```
 
 The same code is a Python package (`pyproject.toml`): `python3 -m pip wheel . --no-deps` builds it, with the reader's
@@ -76,12 +77,19 @@ takes the gallery from there. The repository's own Pages keeps its old address, 
 Models (⚙ Model & API), ported from ThoughtDAG's model access:
 
 - **Agents on this computer**, found at startup (and on Rescan) on PATH, the login shell's PATH, the usual install
-  directories and the node version managers. Claude Code, Codex, Pi and CodeBuddy run generations, each listing its own models
-  (Pi brings whatever providers it is configured with; CodeBuddy, WorkBuddy's copy of it first, the account's); Gemini CLI, Qwen Code, opencode, Cursor Agent, Kimi CLI, Amp,
+  directories and the node version managers. Claude Code, Codex, Pi, CodeBuddy, Qoder CLI and Codely CLI run generations, each listing its own models
+  (Pi brings whatever providers it is configured with; CodeBuddy, WorkBuddy's copy of it first, the account's; Qoder CLI the account's,
+  as `--list-models` lists them; Codely CLI the account's, as `codely --cmd "/model list"` lists them); Gemini CLI, Qwen Code, opencode, Cursor Agent, Kimi CLI, Amp,
   Goose, Crush, Droid, Copilot CLI, iFlow and Aider are reported when present. Claude Code is called without the
   user's settings and CLAUDE.md (`--setting-sources project,local` in a scratch folder; again with them if that fails
-  to sign in). CodeBuddy is called the same way, but with its user settings (without them it has no sign-in and
-  waits), `--tools StructuredOutput` (the one tool its structured output needs) and WorkBuddy's quiet switches (no
+  to sign in). Qoder CLI is called the same way, its reasoning level passed as `--reasoning-effort` (`off` is `none`)
+  and the schema asked for in the prompt, as it has no `--json-schema`. Codely CLI is called in its `-p` mode with
+  `--output-format json`, the answer in its reply's `response`, the schema asked for in the prompt and its reasoning
+  level passed as `--reasoning_effort` (`off` is `minimal`). It has no flag for the system prompt and none that turns
+  its tools off, and a tool call in `-p` mode is accepted without asking: the system prompt leads the prompt, and every
+  tool `--list-tools` names is excluded (`--exclude-tools`), in a scratch folder with `--path-policy strict`, no
+  subagent, and an MCP server name none has (`--allowed-mcp-server-names`), so that it answers instead of acting. CodeBuddy is called the same way as Claude
+  Code, but with its user settings (without them it has no sign-in and
   memory, no reminders: ~400 tokens of its own a call); WorkBuddy's copy runs on the app's Electron as node, with
   WorkBuddy's settings folder, as WorkBuddy runs it (`agents.env_for`). WorkBuddy's copy is not a documented way in,
   so it is looked for widely and checked (`agents.locate_codebuddy`): WorkBuddy where it runs (the process list), its
@@ -106,7 +114,8 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   `models.DEFAULT_THINKING` gives the levels and takeaways off, the argument links low, the translation off, the
   questions low, from the model bench.
   Each caller spells a level its own way: Claude Code `--effort`, and off as `MAX_THINKING_TOKENS=0`; Codex
-  `model_reasoning_effort` (off as `none`, else `low`); Pi `--thinking`; the Claude API thinking and effort by model
+  `model_reasoning_effort` (off as `none`, else `low`); Pi `--thinking`; Qoder CLI `--reasoning-effort` (off as `none`);
+  Codely CLI `--reasoning_effort` (off as `minimal`); the Claude API thinking and effort by model
   (off is `between_tools` on Sonnet 5.x, `disabled` on older models, the least effort where thinking cannot be
   switched off, no thinking on Haiku); OpenAI-compatible APIs the provider's field (OpenRouter `reasoning`, GLM and
   DeepSeek and Kimi `thinking`, Qwen `enable_thinking`), then OpenAI's `reasoning_effort` (off as none, minimal, low:
@@ -182,8 +191,10 @@ is on: in a passage's question and its follow-ups, and in **Ask the whole text**
 text is opened, shown only where questions go to an agent: `app.js` askAgent; `/api/ask` `tools`, `models.ask_spec`).
 Then the agent looks it up on the web with its own tools, and nothing else (`agents.py`): Claude Code with
 `--tools WebSearch,WebFetch`, allowed without asking and no MCP server; CodeBuddy the same, with its StructuredOutput;
-Codex with `--search` in its read-only sandbox; Pi with `--no-builtin-tools`, its extensions' tools alone. None of them
-changes a file (Claude Code, CodeBuddy and Pi read none and run no command either; Codex may read, in its sandbox); each
+Qoder CLI the same, the schema asked for in the prompt; Codex with `--search` in its read-only sandbox; Pi with
+`--no-builtin-tools`, its extensions' tools alone; Codely CLI with its `web_search` and `web_fetch` kept and every
+other tool excluded. None of them
+changes a file (Claude Code, CodeBuddy, Qoder CLI, Codely CLI and Pi read none and run no command either; Codex may read, in its sandbox); each
 keeps its own system prompt, ours appended. The prompt adds that what
 comes from outside the paper ends with [[?]], each page drawn on given as a Markdown link (the reader draws links in
 answers: `reader.js`, `mdLite`); such an answer may take up to 15 minutes, is kept apart from one without the web

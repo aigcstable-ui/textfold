@@ -1,4 +1,5 @@
 """The local server: python -m textfold serve  ->  http://localhost:3017  (ThoughtDAG keeps 3001)
+   On the local network: python -m textfold serve --host 0.0.0.0  ->  http://<this computer's address>:3017
 
   GET  /                      landing: paste a link, pick a language, the list of papers
   GET  /p/<id>?lang=xx        a paper in the reader
@@ -58,10 +59,13 @@
   POST /api/zotero/read        {item: "<lib>/<key>", lang}: an item read. {ref} for its paper online, generated as a
                                link is; else its file, taken as a file dropped on the landing is (/api/files' reply)
 
-Loopback only, and POSTs from other origins are refused. A request addressed to any name but this computer's own
-(localhost, 127.0.0.1, [::1]) is answered 421 and nothing else: a web page that points its own domain at 127.0.0.1 (DNS
-rebinding) is the same origin as its requests to the browser, so only the name they carry tells them apart. Settings and
-keys live in ~/.textfold/settings.json (mode 600), never in the project folder, which may be synced or shared.
+Loopback by default, and POSTs from other origins are refused. `--host 0.0.0.0` serves the local network instead:
+anyone on it can read this library and ask its models (there is no password), so it is a choice, not a default. A
+request addressed to any name but one this server answers to (localhost, 127.0.0.1, [::1], and in that mode its own
+address and this computer's name) is answered 421 and nothing else: a web page that points its own domain at
+127.0.0.1 (DNS rebinding) is the same origin as its requests to the browser, so only the name they carry tells them
+apart. Settings and keys live in ~/.textfold/settings.json (mode 600), never in the project folder, which may be synced
+or shared.
 """
 import base64
 import hashlib
@@ -71,6 +75,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
@@ -540,16 +545,63 @@ def landing_page(jobs):
 
 
 LOCAL_NAMES = ("localhost", "127.0.0.1", "[::1]")
+WILDCARD = ("", "0.0.0.0")
 
 
-def addressed_here(host):
+def _header_name(name):
+    """A name as a Host header writes it: folded to lower case, an IPv6 address in brackets."""
+    n = (name or "").strip().lower()
+    return f"[{n}]" if ":" in n and not (n.startswith("[") and n.endswith("]")) else n
+
+
+def addressed_here(host, names=LOCAL_NAMES):
     """Whether a request's Host header names this computer (any port): what a page on another site cannot make its
-    browser send, even once its domain points at 127.0.0.1."""
+    browser send, even once its domain points at 127.0.0.1. `names`: the names this server answers to (in LAN mode, its
+    own address and this computer's name too)."""
     m = re.fullmatch(r"(\[[0-9a-f:.]+\]|[^:\[\]]+)(?::\d{1,5})?", (host or "").strip().lower())
-    return bool(m) and m.group(1) in LOCAL_NAMES
+    return bool(m) and m.group(1) in {_header_name(n) for n in names}
 
 
-def make_handler(jobs):
+def origin_here(origin, names=LOCAL_NAMES):
+    """Whether a POST's Origin is a page this server served: its own name, or no browser at all (which sends none)."""
+    if not origin:
+        return True
+    return _header_name(urlparse(origin).hostname) in {_header_name(n) for n in names}
+
+
+def local_addresses():
+    """The addresses this computer has on its networks, where another device may reach it (IPv4; 127.0.0.1 left out)."""
+    out = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
+            out.add(info[4][0])
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))   # (no packet sent: the route names the address towards the network)
+            out.add(s.getsockname()[0])
+    except OSError:
+        pass
+    return sorted(x for x in out if x and not x.startswith("127."))
+
+
+def served_names(host, addresses=()):
+    """The names a server bound at `host` answers to: this computer's own, and where it serves more than loopback, the
+    address it is bound to and this computer's names on the network (a browser on another device reaches it by them)."""
+    names = set(LOCAL_NAMES)
+    h = (host or "").strip().lower()
+    if h in WILDCARD:
+        names |= set(addresses)
+        h = ""
+    else:
+        names.add(h)
+    if h not in ("127.0.0.1", "localhost"):
+        names.add(socket.gethostname().strip().lower())
+    return tuple(sorted(n for n in names if n))
+
+
+def make_handler(jobs, names=LOCAL_NAMES):
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store"):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -567,7 +619,7 @@ def make_handler(jobs):
             self.send(code, json.dumps(obj, ensure_ascii=False))
 
         def do_GET(self):
-            if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
+            if not addressed_here(self.headers.get("Host"), names):   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             try:
@@ -685,11 +737,10 @@ def make_handler(jobs):
                 self.json({"error": str(e)}, 500)
 
         def do_POST(self):
-            if not addressed_here(self.headers.get("Host")):
+            if not addressed_here(self.headers.get("Host"), names):
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
-            origin = self.headers.get("Origin")
-            if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1"):
+            if not origin_here(self.headers.get("Origin"), names):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
             try:
                 size = int(self.headers.get("Content-Length") or 0)
@@ -994,7 +1045,7 @@ def _quiet_children():
     subprocess.Popen.__init__ = quiet
 
 
-def announce(port):
+def announce(port, host="127.0.0.1"):
     """server.json in the data folder: where this server is, for the programs that work with it (an editor's plugin, a
     script), which could not tell the desktop app's free port from a server run by hand on 3017. Replaced whole, so a
     program reading it never sees half of it. A server ended outright (on Windows, the app's server.kill(), which sends
@@ -1002,7 +1053,8 @@ def announce(port):
     f = store.DATA / "server.json"
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_name(f"server.json.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"format": "textfold/server", "version": 1, "url": f"http://127.0.0.1:{port}", "port": port,
+    url_host = "127.0.0.1" if host in WILDCARD else host   # (a wildcard server is still on loopback for this computer)
+    tmp.write_text(json.dumps({"format": "textfold/server", "version": 1, "url": f"http://{url_host}:{port}", "port": port,
                                "pid": os.getpid(), "textfold": __version__,
                                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
     os.replace(tmp, f)
@@ -1019,7 +1071,7 @@ def withdraw(f):
         pass
 
 
-def serve(port=3017):
+def serve(port=3017, host="127.0.0.1"):
     if os.name == "nt":
         _quiet_children()
     store.initialize_storage(log=lambda line: print(line, flush=True))   # (a library moved in Settings: copied now, once)
@@ -1027,7 +1079,8 @@ def serve(port=3017):
     # look for the agents on this computer while the server comes up, and erase what was deleted 30 days ago
     threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
     threading.Thread(target=store.empty_trash, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs))
+    addresses = local_addresses() if host in WILDCARD else []
+    httpd = ThreadingHTTPServer((host, port), make_handler(jobs, served_names(host, addresses)))
     port = httpd.server_address[1]   # (the one given, or the free one the system chose for 0)
 
     def killed(signum, frame):
@@ -1036,11 +1089,15 @@ def serve(port=3017):
         withdraw(f)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-    f = announce(port)
+    f = announce(port, host)
     try:
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, killed)
-        print(f"TextFold on http://localhost:{port}")
+        where = [f"http://localhost:{port}"]
+        if host not in ("127.0.0.1", "localhost"):
+            where += [f"http://{ip}:{port}" for ip in (addresses or [host])]
+            print("Serving the local network: anyone on it can read this library and ask its models (no password).", flush=True)
+        print("TextFold on " + "  ".join(where), flush=True)
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass

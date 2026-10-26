@@ -1,7 +1,9 @@
 """DNS rebinding: a web page that points its own domain at 127.0.0.1 is, to the browser, the same origin as its requests
 to TextFold's server, and could read the library (its documents, their PDFs, the notes). Only the name the requests
 are addressed to tells them apart, so the server answers a request addressed to this computer alone (localhost,
-127.0.0.1, [::1]) and every other one with 421. On a server of its own (its own HOME and data folder, no model).
+127.0.0.1, [::1]) and every other one with 421. A server that serves the local network (--host 0.0.0.0) answers to its
+own address and this computer's name too, and still to no other: a browser on another device is not another site. On a
+server of its own (its own HOME and data folder, no model).
 
 Run from the repo root:
     python3 -m unittest discover tests
@@ -14,12 +16,15 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
-from textfold import server
+from textfold import server, store
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +45,82 @@ class Names(unittest.TestCase):
                      "localhost:31917@attacker.example", "[::1].attacker.example", "127.0.0.2:3017", "0.0.0.0:3017",
                      "localhost:abc", "", None):
             self.assertFalse(server.addressed_here(host), host)
+
+    def test_the_names_a_lan_server_answers_to(self):
+        names = server.served_names("0.0.0.0", ["192.168.1.5"])
+        self.assertIn("192.168.1.5", names)
+        self.assertIn("localhost", names)
+        self.assertTrue(server.addressed_here("192.168.1.5:3017", names))
+        self.assertTrue(server.addressed_here("localhost:3017", names))
+        self.assertFalse(server.addressed_here("192.168.1.6:3017", names))
+        self.assertFalse(server.addressed_here("attacker.example:3017", names))
+
+    def test_a_bound_address_is_its_own_name(self):
+        names = server.served_names("192.168.1.5", [])
+        self.assertTrue(server.addressed_here("192.168.1.5:3017", names))
+        self.assertFalse(server.addressed_here("192.168.1.6:3017", names))
+
+    def test_an_origin_is_a_page_this_server_served(self):
+        self.assertTrue(server.origin_here(None))
+        self.assertTrue(server.origin_here("http://192.168.1.5:3017", ("192.168.1.5",)))
+        self.assertTrue(server.origin_here("http://[::1]:3017"))
+        self.assertFalse(server.origin_here("http://attacker.example:3017", ("192.168.1.5",)))
+
+
+class Jobs:
+    def list(self):
+        return []
+
+
+class Lan(unittest.TestCase):
+    """A server that serves the local network: a request addressed to its own address, from a page on it, is its own (a
+    browser on another device is not another site), and any other name still is not. It listens on 127.0.0.1 here, with
+    a made-up address named: the checks read the name, not where the bytes came from."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patch = mock.patch.object(store, "DATA", Path(self.tmp.name) / "data")
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs(), ("192.168.1.5", "my-pc")))
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.close)
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def ask(self, method, path, host, body=None, origin=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=10)
+        c.putrequest(method, path, skip_host=True)
+        c.putheader("Host", host)
+        if origin:
+            c.putheader("Origin", origin)
+        data = json.dumps(body).encode() if body is not None else None
+        if data is not None:
+            c.putheader("Content-Type", "application/json")
+            c.putheader("Content-Length", str(len(data)))
+        c.endheaders(data)
+        r = c.getresponse()
+        out = r.status, r.read()
+        c.close()
+        return out
+
+    def test_its_own_address_reads_and_writes(self):
+        self.assertEqual(self.ask("GET", "/api/folders", "192.168.1.5:3017")[0], 200)
+        status, data = self.ask("POST", "/api/folders", "192.168.1.5:3017", {"op": "new", "name": "Reading"},
+                                origin="http://192.168.1.5:3017")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(json.loads(data)["folders"][0]["name"], "Reading")
+
+    def test_another_site_still_may_not(self):
+        self.assertEqual(self.ask("GET", "/api/folders", "attacker.example:3017")[0], 421)
+        status, _ = self.ask("POST", "/api/folders", "192.168.1.5:3017", {"op": "new", "name": "x"},
+                             origin="http://attacker.example")
+        self.assertEqual(status, 403)
 
 
 class Rebinding(unittest.TestCase):

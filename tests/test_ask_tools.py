@@ -1,7 +1,8 @@
 """A question looked up on the web (#66). An agent on this computer runs as a one-shot text generator: no tools, a
 scratch folder. With the switch beside a question on (a passage's or the whole text's, as the reader needs it), it
-answers with its own web tools: nothing that changes a file (Claude Code, CodeBuddy and Pi no tool that reads one or
-runs a command either, no MCP server; Codex its read-only sandbox), its own system prompt with ours after it. A service has no tools of its own: nothing changes for it. The answer
+answers with its own web tools: nothing that changes a file (Claude Code, CodeBuddy, Qoder CLI and Pi no tool that
+reads one or runs a command either, no MCP server; Codex its read-only sandbox), its own system prompt with ours after
+it. A service has no tools of its own: nothing changes for it. The answer
 cites the pages it drew on as links, says it was made so, and its time to answer is longer. The commands are looked
 at, not run: no agent and no network.
 
@@ -27,6 +28,9 @@ class Runs:
         self.cmds = []
 
     def __call__(self, cmd, **kw):
+        if "--list-tools" in cmd:   # codely's tools, which a generation excludes (not a generation itself)
+            return SimpleNamespace(returncode=0, stderr="", stdout="- read_file: ReadFile\n- web_search: WebSearch\n"
+                                                           "- web_fetch: WebFetch\n- write_file: WriteFile\n")
         self.cmds.append(cmd)
         if "-o" in cmd:   # codex exec writes its answer to the file named
             Path(cmd[cmd.index("-o") + 1]).write_text('{"ok": true}', encoding="utf-8")
@@ -34,6 +38,11 @@ class Runs:
         if "--mode" in cmd:   # pi's events
             end = {"type": "agent_end", "messages": [{"role": "assistant", "content": [{"type": "text", "text": '{"ok": true}'}]}]}
             return SimpleNamespace(returncode=0, stdout=json.dumps(end), stderr="")
+        if "qodercli" in str(cmd[0]):   # its result object, the JSON in the text
+            row = {"type": "result", "is_error": False, "result": '{"ok": true}', "total_cost_usd": 0}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(row), stderr="")
+        if "codely" in str(cmd[0]):   # its reply, the answer in `response`
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"response": '{"ok": true}', "stats": {}}), stderr="")
         return SimpleNamespace(returncode=0, stdout=json.dumps({"structured_output": {"ok": True}, "type": "result"}), stderr="")
 
 
@@ -81,6 +90,24 @@ class Commands(unittest.TestCase):
         self.assertEqual(on[on.index("--tools") + 1], "WebSearch,WebFetch,StructuredOutput")
         self.assertIn("--strict-mcp-config", on)
         self.assertNotIn("--dangerously-skip-permissions", on)
+
+    def test_qodercli(self):
+        off, on = self.run_agent("qodercli", False), self.run_agent("qodercli", True)
+        self.assertEqual(off[off.index("--tools") + 1], "")
+        self.assertEqual(on[on.index("--tools") + 1], "WebSearch,WebFetch")   # (no Read, Edit, Write or Bash)
+        self.assertEqual(on[on.index("--allowed-tools") + 1], "WebSearch,WebFetch")
+        self.assertIn("--strict-mcp-config", on)   # (no MCP server's tools either)
+        self.assertIn("--append-system-prompt", on)
+        self.assertNotIn("--dangerously-skip-permissions", on)
+
+    def test_codely(self):
+        off, on = self.run_agent("codely", False), self.run_agent("codely", True)
+        excluded = lambda cmd: {cmd[i + 1] for i, x in enumerate(cmd) if x == "--exclude-tools"}
+        self.assertEqual(excluded(off), {"read_file", "web_search", "web_fetch", "write_file"})   # (nothing that acts)
+        self.assertEqual(excluded(on), {"read_file", "write_file"})   # (its own web tools alone)
+        for cmd in (off, on):
+            self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
+            self.assertNotIn("--dangerously-skip-permissions", cmd)
 
 
 class Switch(unittest.TestCase):

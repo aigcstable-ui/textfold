@@ -1,6 +1,7 @@
 """One catalog of every model this computer can reach, and the settings that choose one.
 
-  agent models  claude/claude-code/opus, codex/codex/<m>, pi/<provider>/<m>   (agents.py, scanned at startup)
+  agent models  claude/claude-code/opus, codex/codex/<m>, pi/<provider>/<m>, qodercli/qodercli/<m>, codely/codely/<m>
+                (agents.py, scanned at startup)
   API models    <model id> from an env provider or a provider added in the settings (providers.py)
 
 ThoughtDAG's rules: an API id that two providers share belongs to the env provider; the default is the
@@ -124,7 +125,7 @@ def resolve(model_id=None, s=None):
     rt = agents.runtime_of(model_id)
     if rt:
         rest = model_id[len(agents.PREFIX[rt]):]
-        model = rest.split("/", 1)[1] if rt in ("claude-code", "codex", "codebuddy") else rest  # pi keeps provider/model
+        model = rest.split("/", 1)[1] if rt in ("claude-code", "codex", "codebuddy", "qodercli", "codely") else rest  # pi keeps provider/model
         return {"id": model_id, "kind": "agent", "runtime": rt, "model": model, "effort": effort}
     for p in provider_list(s):
         if any(m["id"] == model_id for m in p["models"]):
